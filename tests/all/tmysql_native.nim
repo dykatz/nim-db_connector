@@ -195,8 +195,55 @@ else:
   finally: db.exec(sql"DROP PROCEDURE db_connector_failure")
 
   let mode = db.getValue(sql"SELECT @@sql_mode")
-  # Legacy quoting is tested only in its documented mode. Native bindings
-  # must work in both modes, without connection-independent escaping.
+  # Legacy substitution now uses connection-aware escaping and SQL tokenization.
+  try:
+    for sqlMode in ["", "NO_BACKSLASH_ESCAPES", "ANSI_QUOTES", "ANSI_QUOTES,NO_BACKSLASH_ESCAPES"]:
+      db.exec(sql"SET SESSION sql_mode = ?", sqlMode)
+      doAssert db.getValue(sql"SELECT ?", text) == text
+      let attack = "' OR 1=1 -- \\ ' /* injection */"
+      doAssert db.getValue(sql"SELECT ?", attack) == attack
+      doAssert db.getValue(SqlQuery("SELECT " & db.dbQuote(text))) == text
+      doAssert db.getRow(SqlQuery("SELECT '?', ? /* ? */ # ?\n"), "001") == @["?", "001"]
+      doAssert db.getValue(SqlQuery("SELECT ? AS \"?\""), "quoted alias") == "quoted alias"
+      doAssert db.getValue(sql"SELECT ? LIMIT ? OFFSET ?", "page", 1, 0) == "page"
+      doAssert db.getValue(sql"SELECT ? LIMIT ?, ?", "page", 0, 1) == "page"
+      doAssert db.getValue(sql"SELECT ? LIMIT 0, ?", "page", 1) == "page"
+      doAssert db.getAllRows(sql"SELECT ? LIMIT 1 OFFSET ?", "page", 1).len == 0
+      doAssert db.getValue(sql"SELECT LENGTH(?)", "001") == "3"
+      doAssert db.getValue(SqlQuery("SELECT ? LIMIT /* ? */ ? OFFSET -- ?\n ?"), "page", 1, 0) == "page"
+      for invalid in ["-1", "1.0", "0 OR 1=1", "0; DROP TABLE native_values", "18446744073709551616"]:
+        try:
+          discard db.getAllRows(sql"SELECT ? LIMIT 1 OFFSET ?", "page", invalid)
+          doAssert false
+        except DbError: discard
+      doAssert db.getValue(sql"SELECT COUNT(*) FROM native_values") == "2"
+      db.exec(sql"UPDATE native_values SET n = ? WHERE id = ?", sqlMode, 1)
+      doAssert db.getRow(SqlQuery("SELECT ROW_COUNT(), ? AS \"?\""), "diagnostic") == @["1", "diagnostic"]
+      try:
+        discard db.getValue(sql"SELECT ? /* ? */", "one", "extra")
+        doAssert false
+      except DbError: discard
+
+    # A backslash can be part of a GBK character. Byte-by-byte escaping would
+    # corrupt it; the native client must respect the negotiated charset.
+    doAssert db.setEncoding("gbk")
+    let gbk = "\xbf\x5c' quoted \\ text"
+    var expectedHex = ""
+    for c in gbk: expectedHex.add toHex(ord(c), 2)
+    for sqlMode in ["", "NO_BACKSLASH_ESCAPES"]:
+      db.exec(sql"SET SESSION sql_mode = ?", sqlMode)
+      doAssert db.getValue(sql"SELECT HEX(?)", gbk) == expectedHex
+    try:
+      discard db.getValue(SqlQuery("SELECT '\xbf\x5c', ?"), "template value")
+      doAssert false
+    except DbError: discard
+    doAssert db.setEncoding("latin1")
+    doAssert db.getRow(SqlQuery("SELECT HEX('\xe9'), ?"), "latin1") == @["E9", "latin1"]
+  finally:
+    doAssert db.setEncoding("utf8mb4")
+    db.exec(sql"SET SESSION sql_mode = ?", mode)
+
+  # Native bindings remain independent of SQL-literal escaping.
   db.exec(sql"SET sql_mode = ''")
   doAssert db.getValue(sql"SELECT ?", "quotes ' and \\ slash") == "quotes ' and \\ slash"
   db.exec(sql"SET sql_mode = 'NO_BACKSLASH_ESCAPES'")

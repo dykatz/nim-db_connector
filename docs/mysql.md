@@ -47,11 +47,46 @@ while stmt.fetch(values):
   echo values[0].data
 ```
 
-Legacy `dbQuote` still assumes backslash escapes and cannot know the connection
-charset or SQL mode. Do not use legacy substituted arguments with untrusted data
-or `NO_BACKSLASH_ESCAPES`; migrate values to native bindings. Raw trusted SQL,
+Legacy execution methods retain their string argument conversions, but now
+escape substituted values with the connection-aware client API. Both default
+SQL mode and `NO_BACKSLASH_ESCAPES` are supported. Use `setEncoding` to change
+the charset; raw `SET NAMES` statements can leave the client's charset knowledge
+out of sync with the server and must not be used for this purpose.
+
+The SQL tokenizer substitutes `?` only outside strings, quoted identifiers, and
+comments. Doubled delimiters and SQL-mode-dependent backslash escapes are
+recognized. No extra SQL queries are issued during formatting, preserving
+session diagnostics such as `ROW_COUNT()` and `FOUND_ROWS()`. Templates whose
+double-quote/backslash interpretation is ambiguous under `ANSI_QUOTES` are
+rejected; use single quotes for strings and backticks for identifiers instead.
+Substituted calls reject missing or extra arguments, malformed quoted text, and
+parameters inside executable `/*! ... */` or `/*M! ... */` comments. Placeholders
+belong outside quotes (use `LIKE ?` with a value such as `%term%`, not `LIKE '%?%'`).
+
+Direct `LIMIT ?`, `OFFSET ?`, and `LIMIT ?, ?`/`LIMIT 10, ?` slots accept decimal
+strings or integer arguments in the range `0..high(uint64)`. Empty values, signs,
+whitespace, fractions, SQL expressions, and overflow are rejected. Only these
+pagination slots are emitted as unquoted numbers; numeric-looking values
+elsewhere remain strings, preserving leading zeros and existing coercions:
+
+```nim
+let page = db.getAllRows(sql"SELECT * FROM items LIMIT ? OFFSET ?", 100, pageNumber * 100)
+```
+
+UTF-8 and single-byte SQL templates may contain non-ASCII text. With other
+multibyte client charsets (such as GBK or SJIS), substituted templates must be
+ASCII: pass non-ASCII values as arguments instead. This avoids guessing whether
+a quote or backslash byte belongs to a multibyte character. Argument escaping
+still uses the full connection charset in all cases.
+
+`dbQuote(db, value)` exposes connection-aware value quoting for callers composing
+SQL explicitly. It does not quote identifiers. The original `dbQuote(value)`
+overload remains unchanged for compatibility: it assumes backslash escaping and
+a compatible charset and is unsafe with `NO_BACKSLASH_ESCAPES`.
+
+Prefer native bindings for new code. Trusted raw SQL with no arguments,
 including START TRANSACTION, COMMIT, ROLLBACK and generated SAVEPOINT commands,
-continues to use `exec(db, sql"...")` (text protocol), never `prepare`.
+remains unchanged and uses the text protocol, never `prepare`.
 
 Text iterators buffer their first result and free it even on break/return/errors.
 Additional result sets are drained and discarded; execution-only calls discard

@@ -55,6 +55,8 @@ type
     flags*, decimals*, charsetnr*: cuint
     ftype* {.importc: "type".}: Enum_field_types
   PFIELD* = ptr FIELD
+  CharsetInfo* {.importc: "MY_CHARSET_INFO", header: mysqlHeader, bycopy.} = object
+    mbmaxlen*: cuint
   BIND* {.importc: "MYSQL_BIND", header: mysqlHeader, bycopy.} = object
     len* {.importc: "length".}: ptr culong
     is_null*, error*: Pmy_bool
@@ -117,6 +119,7 @@ proc next_result*(db: PMySQL): cint {.importc: "mysql_next_result".}
 proc more_results*(db: PMySQL): my_bool {.importc: "mysql_more_results".}
 proc set_character_set*(db: PMySQL; encoding: cstring): cint {.importc: "mysql_set_character_set".}
 proc character_set_name*(db: PMySQL): cstring {.importc: "mysql_character_set_name".}
+proc get_character_set_info*(db: PMySQL; info: ptr CharsetInfo) {.importc: "mysql_get_character_set_info".}
 proc get_client_info*(): cstring {.importc: "mysql_get_client_info".}
 proc get_client_version*(): culong {.importc: "mysql_get_client_version".}
 proc get_server_info*(db: PMySQL): cstring {.importc: "mysql_get_server_info".}
@@ -138,6 +141,8 @@ proc commit*(db: PMySQL): my_bool {.importc: "mysql_commit".}
 proc rollback*(db: PMySQL): my_bool {.importc: "mysql_rollback".}
 proc autocommit*(db: PMySQL; enabled: my_bool): my_bool {.importc: "mysql_autocommit".}
 proc real_escape_string*(db: PMySQL; dest, source: cstring; length: culong): culong {.importc: "mysql_real_escape_string".}
+proc escape_literal*(db: PMySQL; dest, source: cstring; length: culong): culong {.importc: "nim_mysql_escape_literal".}
+proc no_backslash_escapes*(db: PMySQL): cint {.importc: "nim_mysql_no_backslash_escapes".}
 proc escape_string*(dest, source: cstring; length: culong): culong {.importc: "mysql_escape_string".}
 proc hex_string*(dest, source: cstring; length: culong): culong {.importc: "mysql_hex_string".}
 proc data_seek*(res: PRES; offset: my_ulonglong) {.importc: "mysql_data_seek".}

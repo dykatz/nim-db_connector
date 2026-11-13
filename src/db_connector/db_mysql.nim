@@ -93,7 +93,7 @@ import strutils, ./mysql
 import ./db_common
 export db_common
 
-import ./private/dbutils
+import ./private/mysql_format
 import std/private/[since]
 
 type
@@ -116,7 +116,7 @@ proc dbError*(db: DbConn) {.noreturn.} =
 proc dbQuote*(s: string): string =
   ## DB quotes the string. Note that this doesn't escape `%` and `_`.
   ## Legacy only: assumes backslash escapes and a compatible charset. Unsafe
-  ## with NO_BACKSLASH_ESCAPES. Use prepare/bindParam for untrusted values.
+  ## with NO_BACKSLASH_ESCAPES. Use dbQuote(db, s) or native bindings instead.
   result = newStringOfCap(s.len + 2)
   result.add "'"
   for c in items(s):
@@ -134,11 +134,37 @@ proc dbQuote*(s: string): string =
     else: result.add c
   add(result, '\'')
 
-proc dbFormat(formatstr: SqlQuery, args: varargs[string]): string =
-  dbFormatImpl(formatstr, dbQuote, args)
+proc dbQuote*(db: DbConn; s: string): string =
+  ## Quote a text value with the connection's charset and current SQL mode.
+  ## This quotes values, not identifiers. Prefer native bindings for new code.
+  if s.len > (high(int)-3) div 2 or uint64(s.len) > uint64(high(culong)):
+    dbError("MySQL value is too large to escape")
+  var escaped = newString(s.len * 2 + 1)
+  let length = mysql.escape_literal(PMySQL(db), cast[cstring](addr escaped[0]),
+                                    s.cstring, culong(s.len))
+  if length == high(culong): dbError(db)
+  if uint64(length) > uint64(escaped.len-1): dbError("invalid MySQL escape length")
+  escaped.setLen(int(length))
+  result = "'" & escaped & "'"
+
+proc dbFormat(db: DbConn; formatstr: SqlQuery, args: varargs[string]): string =
+  let query = string(formatstr)
+  # Raw SQL remains untouched, including transaction/procedure statements.
+  if args.len == 0: return query
+  if not query.allCharsInSet({'\0'..'\127'}):
+    let charset = $mysql.character_set_name(PMySQL(db))
+    if not charset.startsWith("utf8"):
+      var info: CharsetInfo
+      mysql.get_character_set_info(PMySQL(db), addr info)
+      # In GBK/SJIS/etc. punctuation can be a character's trailing byte.
+      # Never guess lexical boundaries when inserting application values.
+      if info.mbmaxlen > 1:
+        dbError("use an ASCII SQL template with bound values for non-UTF8 multibyte charsets")
+  formatMysqlSafe(query, args, proc(s: string): string = dbQuote(db, s),
+                  mysql.no_backslash_escapes(PMySQL(db)) != 0)
 
 proc rawExec(db: DbConn, query: SqlQuery, args: varargs[string, `$`]) =
-  var q = dbFormat(query, args)
+  var q = dbFormat(db, query, args)
   if mysql.real_query(PMySQL db, q.cstring, culong(q.len)) != 0: dbError(db)
 
 proc discardResults(db: DbConn; current = true) =
