@@ -153,7 +153,7 @@ else:
 
   # Stored procedures exercise multiple result sets without enabling arbitrary
   # multi-statement SQL. This database must be disposable and isolated.
-  db.exec(sql"CREATE PROCEDURE db_connector_results() BEGIN SELECT 1; SELECT 2; END")
+  db.exec(sql"CREATE PROCEDURE db_connector_results() BEGIN SELECT 1 UNION ALL SELECT 10; SELECT 2; END")
   try:
     doAssert db.getValue(sql"CALL db_connector_results()") == "1"
     doAssert db.getValue(sql"SELECT 4") == "4"
@@ -167,7 +167,32 @@ else:
       call.exec()
     finally: call.finalize()
     doAssert db.getValue(sql"SELECT 6") == "6"
+    # Finalize must drain later result sets and the final CALL status packet,
+    # whether the first set is unread, partially read, or fully consumed.
+    for readCount in 0..2:
+      let pending = db.prepare("CALL db_connector_results()")
+      pending.exec()
+      for i in 0..<readCount:
+        doAssert pending.fetch(row)
+      pending.finalize()
+      pending.finalize()
+      doAssert db.getValue(sql"SELECT 7") == "7"
   finally: db.exec(sql"DROP PROCEDURE db_connector_results")
+
+  db.exec(sql"CREATE PROCEDURE db_connector_failure() BEGIN SELECT 1; SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'intentional later result error'; END")
+  try:
+    let failing = db.prepare("CALL db_connector_failure()")
+    failing.exec()
+    try:
+      failing.finalize()
+      doAssert false
+    except MysqlError as e:
+      doAssert e.sqlState == "45000"
+      doAssert "intentional later result error" in e.msg
+    # Even failed draining must close the handle and preserve its error.
+    failing.finalize()
+    doAssert db.getValue(sql"SELECT 8") == "8"
+  finally: db.exec(sql"DROP PROCEDURE db_connector_failure")
 
   let mode = db.getValue(sql"SELECT @@sql_mode")
   # Legacy quoting is tested only in its documented mode. Native bindings

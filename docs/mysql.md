@@ -57,6 +57,9 @@ Text iterators buffer their first result and free it even on break/return/errors
 Additional result sets are drained and discarded; execution-only calls discard
 all results. Prepared execution likewise discards additional result sets when
 reset, re-executed or closed. Only the first result is exposed.
+Finalizing a prepared statement drains pending results before closing it. If a
+later result reports a server error, finalization raises that error but still
+releases the statement; calling `finalize` again is safe.
 
 ## Testing
 

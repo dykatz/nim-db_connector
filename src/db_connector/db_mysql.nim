@@ -550,19 +550,26 @@ proc finalize*(stmt: SqlPrepared) =
   ## Close exactly once. All aliases to the reference become closed.
   if stmt != nil and stmt.handle != nil:
     let handle = stmt.handle
-    stmt.handle = nil
-    # stmt_close frees the handle even on failure: never read it afterwards.
-    let failed = mysql.stmt_close(handle)
-    stmt.params.setLen(0)
-    stmt.bound.setLen(0)
-    stmt.input.setLen(0)
-    stmt.inputLengths.setLen(0)
-    stmt.output.setLen(0)
-    stmt.outputBuffers.setLen(0)
-    stmt.lengths.setLen(0)
-    stmt.nulls.setLen(0)
-    stmt.errors.setLen(0)
-    stmt.binary.setLen(0)
+    var failed = false
+    try:
+      # Oracle's client cannot send COM_STMT_CLOSE while later CALL results
+      # are pending, even when the first result set has been buffered.
+      clearResults(stmt)
+    finally:
+      stmt.handle = nil
+      # stmt_close frees the handle even on failure: never read it afterwards.
+      # Always close, including when draining reports a later server error.
+      failed = mysql.stmt_close(handle)
+      stmt.params.setLen(0)
+      stmt.bound.setLen(0)
+      stmt.input.setLen(0)
+      stmt.inputLengths.setLen(0)
+      stmt.output.setLen(0)
+      stmt.outputBuffers.setLen(0)
+      stmt.lengths.setLen(0)
+      stmt.nulls.setLen(0)
+      stmt.errors.setLen(0)
+      stmt.binary.setLen(0)
     if failed: dbError("mysql_stmt_close failed (statement has been released)")
 
 proc close*(stmt: SqlPrepared) = stmt.finalize()
