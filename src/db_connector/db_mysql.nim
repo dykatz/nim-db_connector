@@ -473,20 +473,24 @@ proc statementError(stmt: SqlPrepared) {.noreturn.} =
 
 proc prepare*(db: DbConn; query: string): SqlPrepared =
   ## Prepare native SQL. Transaction control should use text-protocol exec.
-  new(result)
-  result.handle = mysql.stmt_init(PMySQL db)
-  if result.handle == nil: dbError(db)
+  # Keep ownership local until success. A ref allocated directly in `result`
+  # can leak when this proc raises before returning under ARC/ORC.
+  var stmt: SqlPrepared
+  new(stmt)
+  stmt.handle = mysql.stmt_init(PMySQL db)
+  if stmt.handle == nil: dbError(db)
   try:
-    if mysql.stmt_prepare(result.handle, query.cstring, culong(query.len)) != 0:
-      statementError(result)
-    let count = mysql.stmt_param_count(result.handle)
+    if mysql.stmt_prepare(stmt.handle, query.cstring, culong(query.len)) != 0:
+      statementError(stmt)
+    let count = mysql.stmt_param_count(stmt.handle)
     if uint64(count) > uint64(high(int)): dbError("too many statement parameters")
-    result.params = newSeq[DbValue](int(count))
-    result.bound = newSeq[bool](int(count))
+    stmt.params = newSeq[DbValue](int(count))
+    stmt.bound = newSeq[bool](int(count))
   except:
-    discard mysql.stmt_close(result.handle)
-    result.handle = nil
+    discard mysql.stmt_close(stmt.handle)
+    stmt.handle = nil
     raise
+  result = move(stmt)
 
 proc parameterCount*(stmt: SqlPrepared): int =
   checkOpen(stmt)

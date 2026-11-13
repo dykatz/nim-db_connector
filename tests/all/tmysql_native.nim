@@ -193,7 +193,8 @@ else:
   # Restore trusted server-supplied mode (mode tokens contain no quotes).
   db.exec(SqlQuery("SET sql_mode = '" & mode & "'"))
 
-  # Server-side statement count detects leaks in successful/failed prepare paths.
+  # Server-side statement count detects native handle leaks. The ASAN job also
+  # checks that failed prepares release their Nim wrappers, not just handles.
   let handles = db.getRow(sql"SHOW GLOBAL STATUS LIKE 'Prepared_stmt_count'")[1]
   for i in 0..<25:
     let stmt = db.prepare("SELECT 1")
