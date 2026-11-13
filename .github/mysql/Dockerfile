@@ -1,7 +1,10 @@
 ARG client=mariadb
 
 FROM oraclelinux:9 AS oracle
-RUN dnf install -y gcc gcc-c++ make git curl-minimal tar xz && \
+# Oracle Linux images may include either curl or curl-minimal. Reuse either
+# variant rather than trying to install the other, conflicting package.
+RUN dnf install -y gcc gcc-c++ make git ca-certificates tar xz && \
+    (command -v curl >/dev/null 2>&1 || dnf install -y curl) && \
     dnf install -y https://repo.mysql.com/mysql84-community-release-el9-1.noarch.rpm && \
     dnf install -y --nogpgcheck mysql-community-devel mysql-community-client
 
