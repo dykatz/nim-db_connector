@@ -16,3 +16,5 @@ task tests, "Run all tests":
   exec "nim c tests/all/tsqlitebindatas.nim"
   exec "nim c tests/all/tpostgres.nim"
   exec "nim c tests/all/tdb_mysql.nim"
+  exec "nim c -r tests/all/tmysql_abi.nim"
+  exec "nim c -r tests/all/tmysql_native.nim"

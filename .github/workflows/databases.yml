@@ -1,0 +1,111 @@
+name: Database regressions
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+  mysql:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        client: [oracle, mariadb]
+        server: ['mysql:8.4', 'mariadb:11.4']
+        nim: ['2.0.16', '2.2.12']
+        mode: [debug, release]
+        include:
+          - client: mariadb
+            server: 'mariadb:11.4'
+            nim: '2.2.12'
+            mode: asan
+    services:
+      database:
+        image: ${{ matrix.server }}
+        env:
+          MYSQL_ROOT_PASSWORD: root-password
+          MYSQL_DATABASE: connector_test
+          MYSQL_USER: connector
+          MYSQL_PASSWORD: connector-password
+          MARIADB_ROOT_PASSWORD: root-password
+          MARIADB_DATABASE: connector_test
+          MARIADB_USER: connector
+          MARIADB_PASSWORD: connector-password
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h127.0.0.1 -proot-password --silent || mariadb-admin ping -h127.0.0.1 -proot-password --silent"
+          --health-interval=10s --health-timeout=5s --health-retries=20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build with selected client headers and libraries
+        run: docker build -f .github/mysql/Dockerfile --build-arg client=${{ matrix.client }} --build-arg nim_version=${{ matrix.nim }} -t connector-tests .
+      - name: Run ABI and integration tests
+        run: >-
+          docker run --rm --network host
+          -e MYSQL_TEST_HOST=127.0.0.1:3306 -e MYSQL_TEST_USER=connector
+          -e MYSQL_TEST_PASSWORD=connector-password -e MYSQL_TEST_DATABASE=connector_test
+          -e BUILD_MODE=${{ matrix.mode }} connector-tests
+
+  platforms:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.2.12'
+      - name: macOS MariaDB headers and linker discovery
+        if: runner.os == 'macOS'
+        run: |
+          brew install mariadb
+          brew services start mariadb
+          for attempt in {1..30}; do mariadb-admin ping && break; sleep 2; done
+          mariadb -e 'CREATE DATABASE connector_test'
+          export MYSQL_TEST_DATABASE=connector_test MYSQL_TEST_USER="$(whoami)"
+          nim c -r tests/all/tmysql_abi.nim
+          nim c -r tests/all/tmysql_native.nim
+          export MYSQL_TEST_SOCKET="$(mariadb -N -e 'SELECT @@socket')"
+          nim c -r -d:release tests/all/tmysql_native.nim
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+      - name: Build Windows MariaDB Connector/C
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          curl.exe -fL https://archive.mariadb.org/connector-c-3.4.7/mariadb-connector-c-3.4.7-src.tar.gz -o connector.tar.gz
+          tar -xf connector.tar.gz
+          cmake -S mariadb-connector-c-3.4.7-src -B connector-build -A x64 -DCMAKE_INSTALL_PREFIX=C:/mysql-client -DINSTALL_INCLUDEDIR=include -DINSTALL_LIBDIR=lib -DINSTALL_BINDIR=bin -DWITH_UNIT_TESTS=OFF -DWITH_SSL=SCHANNEL
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build connector-build --config Release --target install
+          exit $LASTEXITCODE
+      - name: Windows headers, calling conventions and library loading
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $root = 'C:/mysql-client'
+          $env:PATH = "$root/bin;$root/lib;$env:PATH"
+          nim c -r --cc:vcc "-d:mysqlCFlags=/I`"$root/include`"" "-d:mysqlLibs=`"$root/lib/libmariadb.lib`"" tests/all/tmysql_abi.nim
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          nim c --cc:vcc "-d:mysqlCFlags=/I`"$root/include`"" "-d:mysqlLibs=`"$root/lib/libmariadb.lib`"" tests/all/tmysql_native.nim
+          exit $LASTEXITCODE
+
+  other-drivers:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: dom
+          POSTGRES_DB: test
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ['5432:5432']
+        options: --health-cmd="pg_isready -U dom -d test" --health-interval=5s --health-retries=15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.2.12'
+      - run: sudo apt-get update && sudo apt-get install -y libmariadb-dev-compat libpq-dev libsqlite3-dev unixodbc-dev
+      - run: nim c tests/all/tdb.nim
+      - run: mkdir -p tests/build && nim c -r tests/all/tsqlitebindatas.nim
+      - run: nim c -r tests/all/tpostgres.nim
